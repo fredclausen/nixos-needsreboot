@@ -1,3 +1,6 @@
+// Original code from https://github.com/thefossguy/nixos-needsreboot
+// Forked and updated by Fred Clausen https://github.com/fredclausen/nixos-needsreboot/
+
 #![deny(
     clippy::pedantic,
     //clippy::cargo,
