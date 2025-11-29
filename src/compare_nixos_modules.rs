@@ -1,4 +1,8 @@
-use std::{error::Error, fmt, fs};
+use std::{
+    error::Error,
+    fmt, fs,
+    path::{Path, PathBuf},
+};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
@@ -22,82 +26,147 @@ impl fmt::Display for ModuleType {
 
 impl ModuleType {
     fn get_nix_store_path(&self, use_old_path: bool) -> Result<String, Box<dyn Error>> {
+        debug!("Getting nix store path for module: {self}");
+
         let suffix = match self {
-            Self::LinuxKernel => "/kernel",
-            Self::Systemd => "/systemd",
+            Self::LinuxKernel => "kernel",
+            Self::Systemd => "systemd",
         };
-        let strip_suffix = match self {
-            Self::Systemd => false,
-            Self::LinuxKernel => true,
-        };
+
+        let strip_suffix = matches!(self, Self::LinuxKernel);
 
         let system_path = if use_old_path {
-            OLD_SYSTEM_PATH.to_string()
+            OLD_SYSTEM_PATH
         } else {
-            NEW_SYSTEM_PATH.to_string()
+            NEW_SYSTEM_PATH
         };
 
-        let tmp_module_path = fs::read_link(system_path + suffix)?
-            .into_os_string()
-            .into_string()
-            .expect("Cannot convert PathBuf to String");
+        debug!("System path for module {self}: {system_path} and suffix: {suffix}");
+
+        let link_path: PathBuf = Path::new(&system_path).join(suffix);
+
+        debug!("Reading symlink at path: {}", link_path.display());
+
+        let tmp_module_path_os = match fs::read_link(&link_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Err(
+                    format!("Failed to read symlink at {}: {}", link_path.display(), e).into(),
+                );
+            }
+        };
+
+        let os_string = tmp_module_path_os.into_os_string();
+
+        let Ok(tmp_module_path) = os_string.into_string() else {
+            return Err(format!(
+                "Symlink path contains invalid UTF-8: {}",
+                link_path.display()
+            )
+            .into());
+        };
 
         let nix_module_path = if strip_suffix {
-            let split_module_path = tmp_module_path.split('/').collect::<Vec<&str>>();
-            let mut module_dir = split_module_path
-                .get(1..4)
-                .ok_or("Cannot find the module's directory in /nix/store")?
-                .join("/");
-            module_dir.insert(0, '/');
-            module_dir
+            let parts: Vec<&str> = tmp_module_path.split('/').collect();
+
+            // Expect: [ "", "nix", "store", "<hash>-<pkg>", ... ]
+            let slice = parts.get(1..4);
+            let joined = match slice {
+                Some(v) => v.join("/"),
+                None => {
+                    return Err(format!(
+                        "Cannot determine module directory from '{tmp_module_path}'; \
+                     expected '/nix/store/<hash>-<pkg>'"
+                    )
+                    .into());
+                }
+            };
+
+            format!("/{joined}")
         } else {
             tmp_module_path
         };
 
+        debug!("Nix store path for module {self}: {nix_module_path}");
+
         Ok(nix_module_path)
     }
 
-    fn get_linux_version(linux_path: &str) -> Result<String, Box<dyn Error>> {
-        let lib_modules_path = fs::read_dir(linux_path)?
-            .nth(0)
-            .ok_or("Expected one directory in ".to_string() + linux_path)??
-            .path()
-            .into_os_string()
-            .into_string()
-            .expect("Cannot convert PathBuf to String");
-        let linux_version = lib_modules_path.split('/').nth(6).ok_or(
-            "Could not determine Linux kernel version from path: ".to_string() + &lib_modules_path,
-        )?;
+    fn extract_systemd_version(path: &str) -> Option<String> {
+        debug!("Extracting systemd version from path: {path}");
+        let file_name = Path::new(path).file_name()?.to_str()?;
+        let parts: Vec<&str> = file_name.splitn(2, "-systemd-").collect();
 
-        Ok(linux_version.to_string())
+        if parts.len() == 2 {
+            Some(parts[1].to_string())
+        } else {
+            None
+        }
     }
 
-    fn get_systemd_version(systemd_path: &str) -> Result<String, Box<dyn Error>> {
-        let split_systemd_path = systemd_path.split('-').collect::<Vec<&str>>();
-        let systemd_version = split_systemd_path
-            .get(2..)
-            .ok_or("Could not determine Systemd version from path: ".to_string() + systemd_path)?
-            .join("-");
-        Ok(systemd_version)
+    fn extract_kernel_version(path: &str) -> Option<String> {
+        debug!("Extracting kernel version from path: {path}");
+        let file_name = Path::new(path).file_name()?.to_str()?;
+
+        let parts: Vec<&str> = file_name.split("-linux-").collect();
+        if parts.len() == 2 {
+            return Some(parts[1].to_string());
+        }
+        None
     }
 
     fn get_version(&self) -> Result<(String, String), Box<dyn Error>> {
-        let old_module_root_path = self.get_nix_store_path(true)?;
-        let new_module_root_path = self.get_nix_store_path(false)?;
+        debug!("Getting version for module: {self}");
+
+        let old_module_root_path = match self.get_nix_store_path(true) {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(format!("Failed to get old nix store path for {self}: {e}").into());
+            }
+        };
+
+        let new_module_root_path = match self.get_nix_store_path(false) {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(format!("Failed to get new nix store path for {self}: {e}").into());
+            }
+        };
 
         let old_module_version: String;
         let new_module_version: String;
 
         match self {
             Self::LinuxKernel => {
-                let old_linux_path = old_module_root_path + "/lib/modules";
-                let new_linux_path = new_module_root_path + "/lib/modules";
-                old_module_version = Self::get_linux_version(&old_linux_path)?;
-                new_module_version = Self::get_linux_version(&new_linux_path)?;
+                // Build full paths
+                old_module_version = Self::extract_kernel_version(&old_module_root_path)
+                    .ok_or("Could not extract kernel version")?;
+
+                new_module_version = Self::extract_kernel_version(&new_module_root_path)
+                    .ok_or("Could not extract kernel version")?;
             }
+
             Self::Systemd => {
-                old_module_version = Self::get_systemd_version(&old_module_root_path)?;
-                new_module_version = Self::get_systemd_version(&new_module_root_path)?;
+                // old systemd version
+                old_module_version = match Self::extract_systemd_version(&old_module_root_path) {
+                    Some(v) => v,
+                    None => {
+                        return Err(format!(
+                            "Failed to get old systemd version from {old_module_root_path}"
+                        )
+                        .into());
+                    }
+                };
+
+                // new systemd version
+                new_module_version = match Self::extract_systemd_version(&new_module_root_path) {
+                    Some(v) => v,
+                    None => {
+                        return Err(format!(
+                            "Failed to get new systemd version from {new_module_root_path}"
+                        )
+                        .into());
+                    }
+                };
             }
         }
 
@@ -105,33 +174,66 @@ impl ModuleType {
     }
 }
 
-pub fn upgrades_available() -> Result<String, Box<dyn Error>> {
-    let mut reason = String::new();
-    'x: for module in ModuleType::iter() {
-        let (mut old_module_version, mut new_module_version) = module.get_version()?;
+pub fn upgrades_available() -> Result<Vec<String>, Box<dyn Error>> {
+    let mut reason = vec![];
+
+    for module in ModuleType::iter() {
+        debug!("Checking module: {module}");
+        let (mut old_module_version, mut new_module_version) = match module.get_version() {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(format!("Failed to get version for module {module}:\n{e}").into());
+            }
+        };
 
         if old_module_version != new_module_version {
             if old_module_version.len() != new_module_version.len() {
-                if old_module_version.contains("-rc") && !new_module_version.contains("-rc") {
-                    old_module_version = old_module_version.replace("-rc", ".");
-                    new_module_version.push_str(".0");
-                } else if new_module_version.contains("-rc") && !old_module_version.contains("-rc")
-                {
-                    new_module_version = new_module_version.replace("-rc", ".");
-                    old_module_version.push_str(".0");
-                } else if new_module_version.contains("-rc") && old_module_version.contains("-rc") {
-                    new_module_version = new_module_version.replace("-rc", ".");
-                    old_module_version = old_module_version.replace("-rc", ".");
+                let old_has_rc = old_module_version.contains("-rc");
+                let new_has_rc = new_module_version.contains("-rc");
+
+                match (old_has_rc, new_has_rc) {
+                    (true, false) => {
+                        old_module_version = old_module_version.replace("-rc", ".");
+                        new_module_version.push_str(".0");
+                    }
+                    (false, true) => {
+                        new_module_version = new_module_version.replace("-rc", ".");
+                        old_module_version.push_str(".0");
+                    }
+                    (true, true) => {
+                        old_module_version = old_module_version.replace("-rc", ".");
+                        new_module_version = new_module_version.replace("-rc", ".");
+                    }
+                    (false, false) => {}
                 }
             }
 
-            let old_version = &old_module_version.split('.').collect::<Vec<&str>>();
-            let new_version = &new_module_version.split('.').collect::<Vec<&str>>();
+            let old_parts: Vec<&str> = old_module_version.split('.').collect();
+            let new_parts: Vec<&str> = new_module_version.split('.').collect();
 
-            for (old, new) in old_version.iter().zip(new_version.iter()) {
-                if new > old {
-                    reason = format!("{module} ({old_module_version} -> {new_module_version})\n");
-                    break 'x;
+            for (old, new) in old_parts.iter().zip(new_parts.iter()) {
+                // Try numeric comparison first
+                let old_num = old.parse::<u64>().ok();
+                let new_num = new.parse::<u64>().ok();
+
+                match (old_num, new_num) {
+                    // Both parts are numeric: compare numerically
+                    (Some(o), Some(n)) => {
+                        if n > o {
+                            reason.push(format!(
+                                "{module} ({old_module_version} -> {new_module_version})\n"
+                            ));
+                        }
+                    }
+
+                    // Non-numeric segments: fallback to string comparison
+                    _ => {
+                        if new > old {
+                            reason.push(format!(
+                                "{module} ({old_module_version} -> {new_module_version})\n"
+                            ));
+                        }
+                    }
                 }
             }
         }

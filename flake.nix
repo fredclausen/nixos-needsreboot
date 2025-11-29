@@ -1,43 +1,68 @@
 {
+  description = "Modern reboot detector for NixOS (forked and fixed)";
+
   inputs = {
-    # a better way of using the latest stable version of nixpkgs
-    # without specifying specific release
-    nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/*.tar.gz";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, ... }:
-    let
-      # helpers for producing system-specific outputs
-      supportedSystems = [
-        "aarch64-linux"
-        "riscv64-linux"
-        "x86_64-linux"
-      ];
-      forEachSupportedSystem = f: nixpkgs.lib.genAttrs supportedSystems (system: f {
+  outputs = { self, nixpkgs, flake-utils, ... }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
         pkgs = import nixpkgs { inherit system; };
-      });
-    in
-    {
-      devShells = forEachSupportedSystem ({ pkgs, ... }: {
-        default = pkgs.mkShell {
+      in
+      {
+        ###########################
+        # Development shell       #
+        ###########################
+        devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             rustup
-            gdb
-            pkg-config
+            rustc
+            cargo
 
-            # formatting this flake
+            clippy
+            rustfmt
+
+            pkg-config
+            gdb
+
+            # Formatting for Nix
             nixpkgs-fmt
           ];
         };
-      });
 
-      packages = forEachSupportedSystem ({ pkgs, ... }: {
-        default = pkgs.rustPlatform.buildRustPackage {
+        ###########################
+        # Build the Rust package  #
+        ###########################
+        packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "nixos-needsreboot";
-          version = "0.1.10";
+          version = "0.2.0";
+
           src = ./.;
+
+          # If you vendor dependencies, add:
+          # cargoLock = {
+          #   lockFile = ./Cargo.lock;
+          #   outputHashes = {
+          #     "vendor" = "<vendorSha256>";
+          #   };
+          # };
+
           cargoLock.lockFile = ./Cargo.lock;
+
+          # Required for most Rust CLI tools
+          nativeBuildInputs = [
+            pkgs.pkg-config
+          ];
         };
-      });
-    };
+
+        ###########################
+        # nix run .               #
+        ###########################
+        apps.default = flake-utils.lib.mkApp {
+          drv = self.packages.${system}.default;
+        };
+      }
+    );
 }
