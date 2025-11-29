@@ -12,57 +12,67 @@
         pkgs = import nixpkgs { inherit system; };
       in
       {
-        ###########################
-        # Development shell       #
-        ###########################
+        #################################
+        ## Dev Shell
+        #################################
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             rustup
-            rustc
             cargo
-
+            rustc
             clippy
             rustfmt
 
-            pkg-config
             gdb
+            pkg-config
 
-            # Formatting for Nix
             nixpkgs-fmt
           ];
         };
 
-        ###########################
-        # Build the Rust package  #
-        ###########################
-        packages.default = pkgs.rustPlatform.buildRustPackage {
-          pname = "nixos-needsreboot";
-          version = "0.2.0";
+        #################################
+        ## Package definition
+        #################################
+        packages = rec {
+          # Main package
+          nixos-needsreboot = pkgs.rustPlatform.buildRustPackage {
+            pname = "nixos-needsreboot";
+            version = "0.2.0";
 
-          src = ./.;
+            src = ./.;
 
-          # If you vendor dependencies, add:
-          # cargoLock = {
-          #   lockFile = ./Cargo.lock;
-          #   outputHashes = {
-          #     "vendor" = "<vendorSha256>";
-          #   };
-          # };
+            cargoLock.lockFile = ./Cargo.lock;
 
-          cargoLock.lockFile = ./Cargo.lock;
+            nativeBuildInputs = [
+              # Usually not needed but harmless
+              pkgs.pkg-config
+            ];
 
-          # Required for most Rust CLI tools
-          nativeBuildInputs = [
-            pkgs.pkg-config
-          ];
+            meta = with pkgs.lib; {
+              description = "Modern reboot detector for NixOS (forked and fixed)";
+              homepage = "https://github.com/fredclausen/nixos-needsreboot";
+              license = licenses.mit;
+              platforms = platforms.linux;
+              maintainers = [ maintainers.fredclausen ];
+            };
+          };
+
+          # Alias `default` → main package
+          default = nixos-needsreboot;
         };
 
-        ###########################
-        # nix run .               #
-        ###########################
-        apps.default = flake-utils.lib.mkApp {
-          drv = self.packages.${system}.default;
+        #################################
+        ## nix run .
+        #################################
+        apps.default = {
+          type = "app";
+          program =
+            "${self.packages.${system}.default}/bin/nixos-needsreboot";
         };
+
+        # Also expose top-level defaults (nice for users)
+        defaultPackage = self.packages.${system}.default;
+        defaultApp     = self.apps.${system}.default;
       }
     );
 }
