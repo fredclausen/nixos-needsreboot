@@ -65,11 +65,10 @@ fn print_help() {
     println!("  --debug                 Enable debug logging");
 }
 
-fn version(env_args: &[String]) -> String {
+fn version(env_args: &[String]) {
     if env_args.contains(&"--version".to_string()) {
-        format!("{}: v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
-    } else {
-        String::new()
+        info!("{}: v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
     }
 }
 
@@ -202,11 +201,10 @@ fn main() {
     let env_args: Vec<String> = env::args().collect();
 
     enable_logging(&env_args);
+    version(&env_args);
 
     let dry_run = env_args.contains(&"--dry-run".to_string());
     let no_force_recompute = env_args.contains(&"--no-force-recompute".to_string());
-
-    version(&env_args);
 
     get_user(dry_run);
 
