@@ -166,7 +166,11 @@
           in
           pkgs.mkShell {
             packages = with pkgs; [
-              rustup
+              # NOTE: deliberately no `rustup`.  Its shims take PATH priority
+              # over the nixpkgs toolchain below, and the toolchains rustup
+              # downloads are non-FHS binaries that cannot exec on NixOS
+              # (missing /lib64/ld-linux-x86-64.so.2), so `cargo` fails with
+              # "No such file or directory".  Use the pinned nixpkgs toolchain.
               cargo
               rustc
               clippy
