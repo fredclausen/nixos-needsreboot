@@ -28,7 +28,7 @@
           # Main package
           nixos-needsreboot = pkgs.rustPlatform.buildRustPackage {
             pname = "nixos-needsreboot";
-            version = "0.2.2";
+            version = "0.3.0";
 
             src = ./.;
 
