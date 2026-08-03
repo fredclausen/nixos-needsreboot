@@ -1,14 +1,8 @@
-use std::{
-    error::Error,
-    fmt, fs,
-    path::{Path, PathBuf},
-};
+use std::{error::Error, fmt, fs, path::Path};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
-use crate::{NEW_SYSTEM_PATH, OLD_SYSTEM_PATH};
-
-#[derive(EnumIter)]
+#[derive(EnumIter, Clone, Copy)]
 enum ModuleType {
     LinuxKernel,
     Systemd,
@@ -25,29 +19,38 @@ impl fmt::Display for ModuleType {
 }
 
 impl ModuleType {
-    fn get_nix_store_path(&self, use_old_path: bool) -> Result<String, Box<dyn Error>> {
-        debug!("Getting nix store path for module: {self}");
-
-        let suffix = match self {
+    /// Name of the symlink inside a NixOS system closure that points at this
+    /// module.
+    const fn link_name(self) -> &'static str {
+        match self {
             Self::LinuxKernel => "kernel",
             Self::Systemd => "systemd",
-        };
+        }
+    }
 
-        let strip_suffix = matches!(self, Self::LinuxKernel);
+    /// Substring separating the store hash from the version in this module's
+    /// store path name.
+    const fn version_marker(self) -> &'static str {
+        match self {
+            Self::LinuxKernel => "-linux-",
+            Self::Systemd => "-systemd-",
+        }
+    }
 
-        let system_path = if use_old_path {
-            OLD_SYSTEM_PATH
-        } else {
-            NEW_SYSTEM_PATH
-        };
+    /// Resolve `<system_path>/<link_name>` down to the `/nix/store/<hash>-<pkg>`
+    /// directory that owns it.
+    ///
+    /// The `kernel` symlink points at a file *inside* the package
+    /// (`.../bzImage`), while `systemd` points at the package directory itself,
+    /// so the target is always truncated to the store directory.
+    fn store_path(self, system_path: &Path) -> Result<String, Box<dyn Error>> {
+        debug!("Getting nix store path for module: {self}");
 
-        debug!("System path for module {self}: {system_path} and suffix: {suffix}");
-
-        let link_path: PathBuf = Path::new(&system_path).join(suffix);
+        let link_path = system_path.join(self.link_name());
 
         debug!("Reading symlink at path: {}", link_path.display());
 
-        let tmp_module_path_os = match fs::read_link(&link_path) {
+        let target = match fs::read_link(&link_path) {
             Ok(p) => p,
             Err(e) => {
                 return Err(
@@ -56,9 +59,7 @@ impl ModuleType {
             }
         };
 
-        let os_string = tmp_module_path_os.into_os_string();
-
-        let Ok(tmp_module_path) = os_string.into_string() else {
+        let Ok(target) = target.into_os_string().into_string() else {
             return Err(format!(
                 "Symlink path contains invalid UTF-8: {}",
                 link_path.display()
@@ -66,125 +67,68 @@ impl ModuleType {
             .into());
         };
 
-        let nix_module_path = if strip_suffix {
-            let parts: Vec<&str> = tmp_module_path.split('/').collect();
+        let store_path = store_directory(&target)?;
 
-            // Expect: [ "", "nix", "store", "<hash>-<pkg>", ... ]
-            let slice = parts.get(1..4);
-            let joined = match slice {
-                Some(v) => v.join("/"),
-                None => {
-                    return Err(format!(
-                        "Cannot determine module directory from '{tmp_module_path}'; \
-                     expected '/nix/store/<hash>-<pkg>'"
-                    )
-                    .into());
-                }
-            };
+        debug!("Nix store path for module {self}: {store_path}");
 
-            format!("/{joined}")
-        } else {
-            tmp_module_path
-        };
-
-        debug!("Nix store path for module {self}: {nix_module_path}");
-
-        Ok(nix_module_path)
+        Ok(store_path)
     }
 
-    fn extract_systemd_version(path: &str) -> Option<String> {
-        debug!("Extracting systemd version from path: {path}");
-        let file_name = Path::new(path).file_name()?.to_str()?;
-        let parts: Vec<&str> = file_name.splitn(2, "-systemd-").collect();
+    /// Pull the version out of a `/nix/store/<hash>-<name>-<version>` path.
+    fn extract_version(self, store_path: &str) -> Option<String> {
+        debug!("Extracting {self} version from path: {store_path}");
 
-        if parts.len() == 2 {
-            Some(parts[1].to_string())
-        } else {
-            None
-        }
-    }
+        let file_name = Path::new(store_path).file_name()?.to_str()?;
+        let (_, version) = file_name.split_once(self.version_marker())?;
 
-    fn extract_kernel_version(path: &str) -> Option<String> {
-        debug!("Extracting kernel version from path: {path}");
-        let file_name = Path::new(path).file_name()?.to_str()?;
-
-        let parts: Vec<&str> = file_name.split("-linux-").collect();
-        if parts.len() == 2 {
-            return Some(parts[1].to_string());
-        }
-        None
-    }
-
-    fn get_version(&self) -> Result<(String, String), Box<dyn Error>> {
-        debug!("Getting version for module: {self}");
-
-        let old_module_root_path = match self.get_nix_store_path(true) {
-            Ok(v) => v,
-            Err(e) => {
-                return Err(format!("Failed to get old nix store path for {self}: {e}").into());
-            }
-        };
-
-        let new_module_root_path = match self.get_nix_store_path(false) {
-            Ok(v) => v,
-            Err(e) => {
-                return Err(format!("Failed to get new nix store path for {self}: {e}").into());
-            }
-        };
-
-        let old_module_version: String;
-        let new_module_version: String;
-
-        match self {
-            Self::LinuxKernel => {
-                // Build full paths
-                old_module_version = Self::extract_kernel_version(&old_module_root_path)
-                    .ok_or("Could not extract kernel version")?;
-
-                new_module_version = Self::extract_kernel_version(&new_module_root_path)
-                    .ok_or("Could not extract kernel version")?;
-            }
-
-            Self::Systemd => {
-                // old systemd version
-                old_module_version = match Self::extract_systemd_version(&old_module_root_path) {
-                    Some(v) => v,
-                    None => {
-                        return Err(format!(
-                            "Failed to get old systemd version from {old_module_root_path}"
-                        )
-                        .into());
-                    }
-                };
-
-                // new systemd version
-                new_module_version = match Self::extract_systemd_version(&new_module_root_path) {
-                    Some(v) => v,
-                    None => {
-                        return Err(format!(
-                            "Failed to get new systemd version from {new_module_root_path}"
-                        )
-                        .into());
-                    }
-                };
-            }
-        }
-
-        Ok((old_module_version, new_module_version))
+        Some(version.to_string())
     }
 }
 
-pub fn upgrades_available() -> Result<Vec<String>, Box<dyn Error>> {
+/// Truncate a path pointing somewhere inside a store package to the package
+/// directory itself, i.e. `/nix/store/<hash>-<pkg>`.
+fn store_directory(path: &str) -> Result<String, Box<dyn Error>> {
+    let parts: Vec<&str> = path.split('/').collect();
+
+    // Expect: [ "", "nix", "store", "<hash>-<pkg>", ... ]
+    let Some(slice) = parts.get(1..4) else {
+        return Err(format!(
+            "Cannot determine module directory from '{path}'; \
+             expected '/nix/store/<hash>-<pkg>'"
+        )
+        .into());
+    };
+
+    Ok(format!("/{}", slice.join("/")))
+}
+
+/// Compare the kernel and systemd of two NixOS system closures and return one
+/// human-readable reason per module that got newer.
+pub fn upgrades_available(
+    old_system: &Path,
+    new_system: &Path,
+) -> Result<Vec<String>, Box<dyn Error>> {
     let mut reason = vec![];
 
     for module in ModuleType::iter() {
         debug!("Checking module: {module}");
-        let (mut old_module_version, mut new_module_version) = match module.get_version() {
-            Ok(v) => v,
-            Err(e) => {
-                return Err(format!("Failed to get version for module {module}:\n{e}").into());
-            }
-        };
+
+        let old_store_path = module
+            .store_path(old_system)
+            .map_err(|e| format!("Failed to get old nix store path for {module}: {e}"))?;
+        let new_store_path = module
+            .store_path(new_system)
+            .map_err(|e| format!("Failed to get new nix store path for {module}: {e}"))?;
+
+        let old_module_version = module
+            .extract_version(&old_store_path)
+            .ok_or_else(|| format!("Failed to get old {module} version from {old_store_path}"))?;
+        let new_module_version = module
+            .extract_version(&new_store_path)
+            .ok_or_else(|| format!("Failed to get new {module} version from {new_store_path}"))?;
+
+        let (mut old_module_version, mut new_module_version) =
+            (old_module_version, new_module_version);
 
         if old_module_version != new_module_version {
             if old_module_version.len() != new_module_version.len() {
@@ -240,4 +184,88 @@ pub fn upgrades_available() -> Result<Vec<String>, Box<dyn Error>> {
     }
 
     Ok(reason)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+// Panicking on a failed setup step is the correct failure mode for a test; the
+// crate-level `deny(clippy::unwrap_used)` is aimed at production code.
+mod tests {
+    use super::{store_directory, upgrades_available, ModuleType};
+    use crate::test_support::fake_system;
+    use tempfile::TempDir;
+
+    #[test]
+    fn kernel_upgrade_is_detected() {
+        let tmp = TempDir::new().unwrap();
+
+        let old = fake_system(tmp.path(), "old", "26.05pre-git", "6.18.33", "260.2");
+        let new = fake_system(tmp.path(), "new", "26.05pre-git", "6.18.41", "260.2");
+
+        let reasons = upgrades_available(&old, &new).unwrap();
+        assert_eq!(reasons, vec!["Linux Kernel (6.18.33 -> 6.18.41)\n"]);
+    }
+
+    #[test]
+    fn identical_kernel_and_systemd_report_nothing() {
+        let tmp = TempDir::new().unwrap();
+
+        let old = fake_system(tmp.path(), "old", "26.05pre-git", "6.18.41", "260.2");
+        let new = fake_system(tmp.path(), "new", "26.05pre-git", "6.18.41", "260.2");
+
+        assert_ne!(old, new);
+        assert!(upgrades_available(&old, &new).unwrap().is_empty());
+    }
+
+    #[test]
+    fn systemd_upgrade_is_detected() {
+        let tmp = TempDir::new().unwrap();
+
+        let old = fake_system(tmp.path(), "old", "26.05pre-git", "6.18.41", "260.2");
+        let new = fake_system(tmp.path(), "new", "26.05pre-git", "6.18.41", "261.1");
+
+        let reasons = upgrades_available(&old, &new).unwrap();
+        assert_eq!(reasons, vec!["Systemd (260.2 -> 261.1)\n"]);
+    }
+
+    #[test]
+    fn missing_symlink_is_an_error_not_a_silent_pass() {
+        let tmp = TempDir::new().unwrap();
+        let old = fake_system(tmp.path(), "old", "26.05pre-git", "6.18.41", "260.2");
+        let missing = tmp.path().join("nope");
+
+        assert!(upgrades_available(&old, &missing).is_err());
+    }
+
+    #[test]
+    fn store_directory_truncates_to_the_package() {
+        assert_eq!(
+            store_directory("/nix/store/abc-linux-6.18.41/bzImage").unwrap(),
+            "/nix/store/abc-linux-6.18.41"
+        );
+        assert_eq!(
+            store_directory("/nix/store/abc-systemd-260.2").unwrap(),
+            "/nix/store/abc-systemd-260.2"
+        );
+        assert!(store_directory("/nix/store").is_err());
+    }
+
+    #[test]
+    fn extract_version_reads_the_trailing_version() {
+        assert_eq!(
+            ModuleType::LinuxKernel
+                .extract_version("/nix/store/abc-linux-6.18.41")
+                .unwrap(),
+            "6.18.41"
+        );
+        assert_eq!(
+            ModuleType::Systemd
+                .extract_version("/nix/store/abc-systemd-260.2")
+                .unwrap(),
+            "260.2"
+        );
+        assert!(ModuleType::LinuxKernel
+            .extract_version("/nix/store/abc-systemd-260.2")
+            .is_none());
+    }
 }
