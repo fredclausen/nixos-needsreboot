@@ -28,9 +28,31 @@ jobs:
           use-gha-cache: false
 
       # --- Enter your flake's devShell (same behavior as direnv) ---
-      - name: Run checks in devShell
+      - name: Run lint hooks in devShell
         run: |
           nix develop --impure --command bash -e -c '
             set -euxo pipefail
             pre-commit run --all-files
           '
+
+      # `--locked` fails the build if Cargo.lock would need updating, which
+      # keeps an automerged dependency bump from landing a stale lockfile.
+      - name: Clippy
+        run: |
+          nix develop --impure --command bash -e -c '
+            set -euxo pipefail
+            cargo clippy --locked --all-targets --all-features -- -D warnings
+          '
+
+      - name: Test
+        run: |
+          nix develop --impure --command bash -e -c '
+            set -euxo pipefail
+            cargo test --locked --all-features
+          '
+
+      # Builds the actual package a consumer would get, and runs the test
+      # suite a second time inside the sandbox via buildRustPackage's
+      # checkPhase.
+      - name: Build package
+        run: nix build --print-build-logs .#nixos-needsreboot
