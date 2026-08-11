@@ -48,4 +48,4 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pull-request-branch-prefix: update-
           automerge: true
-          push-to-fork: fredsystems/flake-dep-info-action
+          push-to-fork: fredsystems/nixos-needsreboot
