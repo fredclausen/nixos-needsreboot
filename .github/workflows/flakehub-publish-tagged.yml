@@ -20,8 +20,8 @@ jobs:
       - uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" # v7
         with:
           ref: "${{ (inputs.tag != null) && format('refs/tags/{0}', inputs.tag) || '' }}"
-      - uses: "DeterminateSystems/nix-installer-action@main"
-      - uses: "DeterminateSystems/flakehub-push@main"
+      - uses: "DeterminateSystems/nix-installer-action@33c9ab3ef95cd57c164d9d6eb1f9a46338538d41" # main
+      - uses: "DeterminateSystems/flakehub-push@abcff4fb351e63f852f5fb2b9af0ae4e69de07d4" # main
         with:
           visibility: "public"
           name: "thefossguy/nixos-needsreboot"
