@@ -26,12 +26,14 @@ extern crate log;
 pub mod cli;
 pub mod compare_nixos_modules;
 pub mod error;
+pub mod generations;
 pub mod paths;
 pub mod reboot;
 pub mod run;
 
 pub use cli::{Invocation, Mode, Options, Recompute, Verbosity};
 pub use error::Error;
+pub use generations::{Generation, Generations};
 pub use paths::SystemPaths;
-pub use reboot::{decide, RebootDecision};
+pub use reboot::{decide, staged_generation, RebootDecision, StagedGeneration};
 pub use run::{run, Outcome, Privilege};

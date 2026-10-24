@@ -7,8 +7,9 @@
 
 use crate::cli::{Mode, Options, Recompute};
 use crate::error::Error;
+use crate::generations::Generations;
 use crate::paths::SystemPaths;
-use crate::reboot::{decide, RebootDecision};
+use crate::reboot::{decide, staged_generation, RebootDecision};
 use std::{env, fs, path::Path, path::PathBuf};
 
 /// Whether the process may write to the system.
@@ -43,7 +44,8 @@ impl Privilege {
 pub enum Outcome {
     /// The machine is running everything the activated generation provides.
     NoRebootRequired,
-    /// The activated generation ships a newer kernel or systemd.
+    /// The activated generation ships a newer kernel or systemd, or a
+    /// generation is staged for the next boot.
     RebootRequired,
 }
 
@@ -81,7 +83,9 @@ pub fn run(options: &Options, paths: &SystemPaths, privilege: Privilege) -> Resu
     }
 
     let booted = resolve_system(&paths.booted)?;
+    let current = resolve_system(&paths.current)?;
     let activated = resolve_system(&paths.activated)?;
+    let generations = Generations::read(&paths.activated)?;
 
     if let Some(outcome) = report_existing_flag_file(options.recompute, &paths.flag_file)? {
         return Ok(outcome);
@@ -89,7 +93,9 @@ pub fn run(options: &Options, paths: &SystemPaths, privilege: Privilege) -> Resu
 
     remove_stale_flag_file(options.mode, &paths.flag_file)?;
 
-    match decide(&booted, &activated)? {
+    let staged = staged_generation(&current, &activated, &generations);
+
+    match decide(&booted, &activated)?.including(staged) {
         RebootDecision::SameGeneration => {
             info!("You are using the latest NixOS generation, no need to reboot");
             Ok(Outcome::NoRebootRequired)

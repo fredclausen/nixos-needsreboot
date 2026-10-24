@@ -8,7 +8,10 @@ use std::path::PathBuf;
 
 /// The symlink pointing at the currently booted system closure.
 pub const BOOTED_SYSTEM: &str = "/run/booted-system";
-/// The symlink pointing at the most recently activated system closure.
+/// The symlink pointing at the system closure that is running right now.
+pub const CURRENT_SYSTEM: &str = "/run/current-system";
+/// The system profile: the closure the bootloader will start on the next boot.
+/// Its numbered generations live next to it as `system-<N>-link`.
 pub const ACTIVATED_SYSTEM: &str = "/nix/var/nix/profiles/system";
 /// The file written to record that a reboot is required, and why.
 pub const REBOOT_FLAG_FILE: &str = "/run/reboot-required";
@@ -18,7 +21,9 @@ pub const REBOOT_FLAG_FILE: &str = "/run/reboot-required";
 pub struct SystemPaths {
     /// Symlink to the booted system closure.
     pub booted: PathBuf,
-    /// Symlink to the activated system closure.
+    /// Symlink to the running system closure.
+    pub current: PathBuf,
+    /// The system profile, pointing at the closure that will be booted next.
     pub activated: PathBuf,
     /// File recording that a reboot is required.
     pub flag_file: PathBuf,
@@ -30,6 +35,7 @@ impl SystemPaths {
     pub fn nixos() -> Self {
         Self {
             booted: PathBuf::from(BOOTED_SYSTEM),
+            current: PathBuf::from(CURRENT_SYSTEM),
             activated: PathBuf::from(ACTIVATED_SYSTEM),
             flag_file: PathBuf::from(REBOOT_FLAG_FILE),
         }

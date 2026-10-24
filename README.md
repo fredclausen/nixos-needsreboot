@@ -2,7 +2,9 @@
 
 `nixos-needsreboot` determines whether a NixOS system requires a reboot
 after an upgrade. It compares the booted system closure against the
-activated one, and optionally writes a reboot-required flag file.
+system profile, checks whether the profile holds a generation that the
+running system has not switched to, and can write a reboot-required flag
+file.
 
 This project is a **maintained fork** of the original work by
 [@thefossguy](https://github.com/thefossguy/nixos-needsreboot)
@@ -12,6 +14,10 @@ This project is a **maintained fork** of the original work by
 - Detects whether a reboot is required based on:
   - Kernel updates
   - Systemd updates
+  - A generation staged for the next boot (`nixos-rebuild boot`) that the
+    running system has not switched to yet. A closure activated with
+    `nixos-rebuild test` is never in the system profile, so it is not
+    reported.
 - Can print the reasons without touching the system (`--dry-run`)
 - Can avoid recomputing if a reboot flag exists (`--no-force-recompute`)
 - Optional debug logging (`--debug`)
