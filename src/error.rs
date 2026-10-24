@@ -22,6 +22,18 @@ pub enum Error {
         /// The underlying filesystem error.
         source: io::Error,
     },
+    /// The system profile path does not name a profile inside a directory.
+    NotAProfile {
+        /// The path that was expected to be a profile.
+        path: PathBuf,
+    },
+    /// The directory holding the profile's generations could not be listed.
+    GenerationsUnreadable {
+        /// The directory that could not be listed.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
     /// `$USER` is unset or is not valid UTF-8.
     UnknownUser,
     /// The reboot flag file would have to be written, but the process is not
@@ -63,6 +75,16 @@ impl fmt::Display for Error {
             Self::UnresolvableSystem { path, source } => {
                 write!(f, "Cannot resolve {}: {source}", path.display())
             }
+            Self::NotAProfile { path } => {
+                write!(f, "{} does not name a system profile", path.display())
+            }
+            Self::GenerationsUnreadable { path, source } => {
+                write!(
+                    f,
+                    "Cannot list system generations in {}: {source}",
+                    path.display()
+                )
+            }
             Self::UnknownUser => write!(f, "Cannot determine current user from $USER"),
             Self::NotRoot => write!(
                 f,
@@ -86,11 +108,15 @@ impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             Self::UnresolvableSystem { source, .. }
+            | Self::GenerationsUnreadable { source, .. }
             | Self::FlagFileRead { source, .. }
             | Self::FlagFileRemove { source, .. }
             | Self::FlagFileWrite { source, .. } => Some(source),
             Self::Compare(source) => Some(source),
-            Self::NotNixos { .. } | Self::UnknownUser | Self::NotRoot => None,
+            Self::NotNixos { .. }
+            | Self::NotAProfile { .. }
+            | Self::UnknownUser
+            | Self::NotRoot => None,
         }
     }
 }

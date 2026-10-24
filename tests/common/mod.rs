@@ -66,22 +66,54 @@ impl FakeNixos {
         system
     }
 
-    /// Point the booted and activated profile symlinks at `booted` and
-    /// `activated`, and return the [`SystemPaths`] describing this tree.
+    /// The state `nixos-rebuild switch` leaves behind: `booted` was booted,
+    /// `activated` is both running and in the profile, and both are
+    /// registered generations (`1` and `2`).
     ///
     /// The flag file is *not* created; its path merely points into the tree.
     pub fn paths(&self, booted: &Path, activated: &Path) -> SystemPaths {
+        self.layout(booted, activated, activated, &[booted, activated])
+    }
+
+    /// Lay out the profile symlinks explicitly.
+    ///
+    /// Each closure in `registered` becomes generation `index + 1`, as a
+    /// `system-<N>-link` next to the profile, and the profile points at the
+    /// last generation link whose closure is `profile` — exactly the chain of
+    /// symlinks `nixos-rebuild` builds. A `profile` that is not registered is
+    /// linked directly.
+    pub fn layout(
+        &self,
+        booted: &Path,
+        current: &Path,
+        profile: &Path,
+        registered: &[&Path],
+    ) -> SystemPaths {
+        let run = self.root().join("run");
         let profiles = self.root().join("profiles");
+        fs::create_dir_all(&run).unwrap();
         fs::create_dir_all(&profiles).unwrap();
 
-        let booted_link = profiles.join("booted-system");
-        let activated_link = profiles.join("system");
+        let booted_link = run.join("booted-system");
+        let current_link = run.join("current-system");
+        let profile_link = profiles.join("system");
         symlink(booted, &booted_link).unwrap();
-        symlink(activated, &activated_link).unwrap();
+        symlink(current, &current_link).unwrap();
+
+        let mut profile_target = profile.to_path_buf();
+        for (index, closure) in registered.iter().enumerate() {
+            let generation = profiles.join(format!("system-{}-link", index + 1));
+            symlink(closure, &generation).unwrap();
+            if *closure == profile {
+                profile_target = generation;
+            }
+        }
+        symlink(&profile_target, &profile_link).unwrap();
 
         SystemPaths {
             booted: booted_link,
-            activated: activated_link,
+            current: current_link,
+            activated: profile_link,
             flag_file: self.root().join("reboot-required"),
         }
     }
