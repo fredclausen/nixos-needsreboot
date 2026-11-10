@@ -2,7 +2,8 @@
   description = "Modern reboot detector for NixOS (forked and fixed)";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    # renovate: datasource=git-refs depName=nixpkgs packageName=https://github.com/NixOS/nixpkgs versioning=regex:^nixos-(?<major>\d+)\.(?<minor>\d+)$
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
     git-hooks.url = "github:cachix/git-hooks.nix";
   };
@@ -15,7 +16,19 @@
       git-hooks,
       ...
     }:
-    flake-utils.lib.eachDefaultSystem (
+    {
+      #################################
+      ## Overlay
+      #################################
+      # Builds against the consumer's own nixpkgs, so a NixOS config can
+      # install this without pulling this flake's pinned nixpkgs into its
+      # closure (and can set `inputs.nixpkgs.follows` to drop it from its
+      # lock entirely).
+      overlays.default = final: _prev: {
+        nixos-needsreboot = final.callPackage ./package.nix { };
+      };
+    }
+    // flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -26,27 +39,7 @@
         #################################
         packages = rec {
           # Main package
-          nixos-needsreboot = pkgs.rustPlatform.buildRustPackage {
-            pname = "nixos-needsreboot";
-            version = "0.3.0";
-
-            src = ./.;
-
-            cargoLock.lockFile = ./Cargo.lock;
-
-            nativeBuildInputs = [
-              # Usually not needed but harmless
-              pkgs.pkg-config
-            ];
-
-            meta = with pkgs.lib; {
-              description = "Modern reboot detector for NixOS (forked and fixed)";
-              homepage = "https://github.com/fredclausen/nixos-needsreboot";
-              license = licenses.mit;
-              platforms = platforms.linux;
-              maintainers = [ maintainers.fredclausen ];
-            };
-          };
+          nixos-needsreboot = pkgs.callPackage ./package.nix { };
 
           # Alias `default` → main package
           default = nixos-needsreboot;
